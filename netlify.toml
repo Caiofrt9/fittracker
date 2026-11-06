@@ -1,0 +1,14 @@
+# Diz ao Netlify que o app fica na pasta "app" (sem etapa de build)
+[build]
+  publish = "app"
+  command = ""
+
+# O service worker e a página inicial nunca ficam presos em cache antigo
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache"
