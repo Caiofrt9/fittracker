@@ -80,6 +80,56 @@
 
       <!-- TREINAR -->
       <section id="tabTreino" class="tab" hidden>
+        <!-- Hub: rotinas -->
+        <div id="tHub" class="stack">
+          <div class="card">
+            <div class="row-between"><h2>Começar</h2></div>
+            <div class="btns"><button class="go grow" id="hubVazio" type="button">Treino vazio</button><button class="ghost" id="hubManual" type="button">Registro rápido</button></div>
+            <p class="small muted">Registro rápido serve para muay thai ou para lançar um treino que já passou.</p>
+          </div>
+          <div class="row-between"><h2>Minhas rotinas</h2><button class="link" id="hubNova" type="button">+ Nova rotina</button></div>
+          <div id="hubRotinas" class="exs"></div>
+          <p class="small muted" id="hubAviso" hidden></p>
+        </div>
+
+        <!-- Editor de rotina -->
+        <div id="tRotEdit" class="stack" hidden>
+          <div class="card form">
+            <label><span class="lbl">Nome da rotina</span><input id="rNome" type="text" maxlength="60" placeholder="ex.: Pull — barra fixa"></label>
+          </div>
+          <div id="rExs" class="exs"></div>
+          <div class="card">
+            <span class="lbl">Adicionar exercício</span>
+            <div class="chips" id="rChips"></div>
+            <div class="row-inline"><input type="text" id="rNovo" placeholder="Outro exercício" maxlength="60"><button type="button" class="ghost" id="rNovoGo">Adicionar</button></div>
+          </div>
+          <div class="sticky-save btns">
+            <button class="ghost" id="rCancelar" type="button">Cancelar</button>
+            <button class="ghost danger" id="rApagar" type="button" hidden>Apagar</button>
+            <button class="go grow" id="rSalvar" type="button">Salvar rotina</button>
+          </div>
+        </div>
+
+        <!-- Treino em andamento -->
+        <div id="tSessao" class="stack" hidden>
+          <div class="card sess-top">
+            <div class="row-between"><h2 id="sNome">Treino</h2><b class="num big-time" id="sTempo">0:00</b></div>
+            <div class="row-between small muted num"><span id="sResumo">0 séries feitas</span><span id="sVolume"></span></div>
+            <input id="sNota" type="text" maxlength="200" placeholder="Como está o treino? (opcional)">
+          </div>
+          <div id="sExs" class="exs"></div>
+          <div class="card">
+            <span class="lbl">Adicionar exercício</span>
+            <div class="chips" id="sChips"></div>
+            <div class="row-inline"><input type="text" id="sNovo" placeholder="Outro exercício" maxlength="60"><button type="button" class="ghost" id="sNovoGo">Adicionar</button></div>
+          </div>
+          <div class="btns end">
+            <button class="ghost danger" id="sDescartar" type="button">Descartar treino</button>
+            <button class="go grow" id="sFinalizar" type="button">Finalizar treino</button>
+          </div>
+        </div>
+
+        <!-- Registro rápido / edição -->
         <form id="fTreino" class="form">
           <div class="card form">
             <div class="row2">
@@ -106,7 +156,7 @@
             </div>
           </div>
 
-          <div class="sticky-save"><button class="go wide" id="tSalvar" type="submit">Salvar treino</button></div>
+          <div class="sticky-save btns"><button class="ghost" id="tVoltar" type="button">Voltar</button><button class="go grow" id="tSalvar" type="submit">Salvar treino</button></div>
         </form>
       </section>
 
@@ -179,6 +229,14 @@
     </nav>
   </div>
 
+  <div class="restbar" id="restBar" hidden>
+    <div class="rest-fill" id="restFill"></div>
+    <div class="rest-in">
+      <div><span class="lbl">Descanso</span><b class="num" id="restTxt">1:30</b></div>
+      <div class="btns"><button type="button" class="ghost" id="restMenos">−15</button><button type="button" class="ghost" id="restMais">+15</button><button type="button" class="go" id="restPular">Pular</button></div>
+    </div>
+  </div>
+  <button type="button" class="sessbanner" id="sessBanner" hidden>Treino em andamento · <b class="num" id="sessBannerT">0:00</b> · voltar</button>
   <div class="toast" id="toast" role="status" hidden></div>
 
   <script src="config.js"></script>

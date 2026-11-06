@@ -33,6 +33,7 @@
   let draft = null;
   let authMode = "in";
   let exSel = null;
+  let rotinas = [], bancoNovo = true, sessao = null, rotEdit = null, descanso = null;
 
   // ---------- início ----------
   const cfg = window.CANTO_CONFIG || {};
@@ -99,11 +100,16 @@
   async function loadAll() {
     $("topNote").textContent = "carregando…";
     try {
-      const [p, t, c] = await Promise.all([
+      let [p, t, c, r] = await Promise.all([
         sb.from("pesagens").select("id,data,kg").order("data"),
-        sb.from("treinos").select("id,data,tipo,nota,series(id,exercicio,ordem,serie,reps,segundos,carga_kg)").order("data"),
-        sb.from("config").select("meta_kg").maybeSingle()
+        sb.from("treinos").select("id,data,tipo,nota,duracao_seg,series(id,exercicio,ordem,serie,reps,segundos,carga_kg,tipo_serie)").order("data"),
+        sb.from("config").select("meta_kg").maybeSingle(),
+        sb.from("rotinas").select("id,nome,exercicios,ordem,criado_em").order("ordem").order("criado_em")
       ]);
+      // Banco ainda sem a atualização de rotinas: carrega do jeito antigo
+      bancoNovo = !t.error && !r.error;
+      if (t.error) t = await sb.from("treinos").select("id,data,tipo,nota,series(id,exercicio,ordem,serie,reps,segundos,carga_kg)").order("data");
+      rotinas = r.error ? [] : (r.data || []);
       if (p.error) throw p.error; if (t.error) throw t.error;
       pesos = (p.data || []).map((r) => ({ ...r, kg: Number(r.kg) }));
       treinos = (t.data || []).map((r) => ({ ...r, series: (r.series || []).sort((a, b) => a.ordem - b.ordem || a.serie - b.serie) }));
@@ -124,7 +130,7 @@
   function faltou(s) { const ini = inicioData(); return !!ini && s >= ini && s < hoje() && !treinosDoDia(s).length; }
   function melhorReps(nome) {
     let best = null;
-    treinos.forEach((t) => t.series.forEach((s) => { if (s.exercicio === nome && s.reps != null && (!best || s.reps > best.v)) best = { v: s.reps, data: t.data }; }));
+    treinos.forEach((t) => t.series.forEach((s) => { if (s.exercicio === nome && s.reps != null && s.tipo_serie !== "A" && (!best || s.reps > best.v)) best = { v: s.reps, data: t.data }; }));
     return best;
   }
 
@@ -136,12 +142,12 @@
     document.querySelectorAll(".tab").forEach((s) => (s.hidden = s.id !== t));
     document.querySelectorAll("#tabs button").forEach((b) => { if (b.dataset.tab === t) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
     $("title").textContent = TITLES[t];
-    if (t === "tabTreino" && !draft) openDraft(hoje());
+    if (t === "tabTreino") treinoModo(draft ? "manual" : null);
     window.scrollTo(0, 0);
   }
   document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => { if (b.dataset.tab === "tabTreino") draft = null; go(b.dataset.tab); }));
 
-  function renderAll() { renderHome(); renderCal(); renderPeso(); renderExEvo(); $("mKg").value = fmtKg(metaKg); }
+  function renderAll() { renderHome(); renderCal(); renderPeso(); renderExEvo(); renderHub(); $("mKg").value = fmtKg(metaKg); }
 
   // ---------- INÍCIO ----------
   function renderHome() {
@@ -190,7 +196,10 @@
     else if (plan) { $("hHoje").textContent = NOME[plan]; $("hHojeD").textContent = plan === "mt" ? "Treino de muay thai às 19h." : "Comece pela barra fixa pronada, ainda descansado."; $("hGo").textContent = "Registrar treino"; }
     else { $("hHoje").textContent = "Descanso"; $("hHojeD").textContent = "Domingo é dia de recuperar. Se treinar mesmo assim, registre."; $("hGo").textContent = "Registrar treino"; }
   }
-  $("hGo").addEventListener("click", () => { openDraft(hoje()); go("tabTreino"); });
+  $("hGo").addEventListener("click", () => {
+    if (!sessao && (treinosDoDia(hoje()).length || PLAN[new Date().getDay()] === "mt")) openDraft(hoje()); else draft = null;
+    go("tabTreino");
+  });
   $("hPesar").addEventListener("click", () => { setEvoMode("peso"); go("tabEvo"); setTimeout(() => $("pKg").focus(), 50); });
 
   // ---------- TREINAR ----------
@@ -475,6 +484,356 @@
     if (r.error) { toast("Não salvou: " + r.error.message); return; }
     metaKg = Math.round(v * 10) / 10; renderAll(); toast("Meta salva: " + fmtKg(metaKg) + " kg.");
   });
+
+  // =====================================================================
+  // ROTINAS E TREINO AO VIVO
+  // =====================================================================
+  const DESCANSOS = [0, 30, 45, 60, 75, 90, 120, 150, 180, 240, 300];
+  const fmtT = (seg) => { seg = Math.max(0, Math.round(seg)); const h = Math.floor(seg / 3600), m = Math.floor((seg % 3600) / 60), x = seg % 60; return (h ? h + ":" + pad(m) : m) + ":" + pad(x); };
+  const fmtDesc = (seg) => (seg ? (seg >= 60 ? Math.floor(seg / 60) + "min" + (seg % 60 ? " " + (seg % 60) + "s" : "") : seg + "s") : "sem descanso");
+  const SKEY = "ft_sessao";
+  const store = {
+    get() { try { return JSON.parse(localStorage.getItem(SKEY) || "null"); } catch (e) { return null; } },
+    set(v) { try { if (v) localStorage.setItem(SKEY, JSON.stringify(v)); else localStorage.removeItem(SKEY); } catch (e) {} }
+  };
+
+  // ---------- modos da aba Treinar ----------
+  let modo = "hub";
+  function treinoModo(m) {
+    if (!m) m = sessao ? "sessao" : "hub";
+    modo = m;
+    $("tHub").hidden = m !== "hub";
+    $("tRotEdit").hidden = m !== "rotina";
+    $("tSessao").hidden = m !== "sessao";
+    $("fTreino").hidden = m !== "manual";
+    $("title").textContent = m === "rotina" ? (rotEdit && rotEdit.id ? "Editar rotina" : "Nova rotina") : m === "sessao" ? "Treinando" : m === "manual" ? "Registro rápido" : "Treinar";
+    if (m === "hub") renderHub();
+    if (m === "sessao") renderSessao();
+    atualizarBanner();
+  }
+  $("tVoltar").addEventListener("click", () => { draft = null; treinoModo("hub"); window.scrollTo(0, 0); });
+  $("hubManual").addEventListener("click", () => { openDraft(hoje()); treinoModo("manual"); });
+  $("hubVazio").addEventListener("click", () => iniciarSessao(null));
+  $("hubNova").addEventListener("click", () => abrirRotina(null));
+
+  function exLista() {
+    const lista = EXS.map((e) => e.n);
+    treinos.forEach((t) => t.series.forEach((s) => { if (!lista.includes(s.exercicio)) lista.push(s.exercicio); }));
+    rotinas.forEach((r) => (r.exercicios || []).forEach((e) => { if (!lista.includes(e.nome)) lista.push(e.nome); }));
+    return lista;
+  }
+  function chips(boxId, onPick) {
+    const c = $(boxId); c.textContent = "";
+    exLista().forEach((n) => { const b = document.createElement("button"); b.type = "button"; b.textContent = "+ " + n; b.onclick = () => onPick(n); c.appendChild(b); });
+  }
+  function descSelect(valor, onChange) {
+    const w = document.createElement("label"); w.className = "rest-pick";
+    w.innerHTML = '<span>⏱ Descanso</span>';
+    const sel = document.createElement("select");
+    const opts = DESCANSOS.includes(valor) ? DESCANSOS : DESCANSOS.concat([valor]).sort((a, b) => a - b);
+    opts.forEach((v) => { const o = document.createElement("option"); o.value = v; o.textContent = fmtDesc(v); if (v === valor) o.selected = true; sel.appendChild(o); });
+    sel.onchange = () => onChange(Number(sel.value));
+    w.appendChild(sel); return w;
+  }
+
+  // ---------- lista de rotinas ----------
+  function renderHub() {
+    const box = $("hubRotinas"); if (!box) return;
+    box.textContent = "";
+    $("hubAviso").hidden = bancoNovo;
+    $("hubAviso").textContent = "Para salvar rotinas, rode o arquivo supabase/3-rotinas.sql no Supabase (SQL Editor). Enquanto isso, use o treino vazio.";
+    if (!rotinas.length) {
+      const c = document.createElement("div"); c.className = "card";
+      c.innerHTML = '<p class="empty">Você ainda não tem rotinas. Crie a sua ou comece pela sugestão de treino de pull para a barra fixa.</p>';
+      const b = document.createElement("button"); b.type = "button"; b.className = "ghost"; b.textContent = "Usar modelo: Pull para barra fixa";
+      b.disabled = !bancoNovo; b.onclick = criarModeloPull; c.appendChild(b); box.appendChild(c); return;
+    }
+    rotinas.forEach((r) => {
+      const exs = r.exercicios || [];
+      const c = document.createElement("div"); c.className = "card rot";
+      const series = exs.reduce((a, e) => a + (e.sets || []).length, 0);
+      c.innerHTML = '<div class="rot-h"><b>' + esc(r.nome) + '</b><button type="button" class="link" data-ed="1">editar</button></div>' +
+        "<p>" + esc(exs.map((e) => e.nome).join(" · ") || "sem exercícios") + "</p>" +
+        '<span class="small muted">' + exs.length + " exercício" + (exs.length === 1 ? "" : "s") + " · " + series + " séries</span>";
+      const go1 = document.createElement("button"); go1.type = "button"; go1.className = "go"; go1.textContent = "Iniciar rotina";
+      go1.onclick = () => iniciarSessao(r); c.appendChild(go1);
+      c.querySelector("[data-ed]").onclick = () => abrirRotina(r);
+      box.appendChild(c);
+    });
+  }
+
+  async function criarModeloPull() {
+    const S = (n, alvo, tipo) => Array.from({ length: n }, () => ({ tipo: tipo || "N", alvo, kg: null }));
+    const exercicios = [
+      { nome: "Barra escapular", unid: "reps", descanso: 60, nota: "Aquecimento: só puxar as escápulas, braço estendido.", sets: S(2, 8, "A") },
+      { nome: "Barra pronada", unid: "reps", descanso: 150, nota: "Sempre primeiro, descansado. Pare 1 repetição antes da falha.", sets: S(5, 3) },
+      { nome: "Negativa na barra", unid: "reps", descanso: 90, nota: "Descer em 5 segundos.", sets: S(2, 3) },
+      { nome: "Barra supinada", unid: "reps", descanso: 120, nota: "", sets: S(3, 4) },
+      { nome: "Remada nas argolas", unid: "reps", descanso: 90, nota: "Quanto mais deitado, mais difícil.", sets: S(3, 10) },
+      { nome: "Rosca direta", unid: "reps", descanso: 60, nota: "Barra pesada.", sets: S(3, 10) },
+      { nome: "Face pull", unid: "reps", descanso: 60, nota: "Nas argolas.", sets: S(3, 12) },
+      { nome: "Dead hang", unid: "seg", descanso: 60, nota: "Pegada: aguente o máximo.", sets: S(3, 30) }
+    ];
+    const r = await sb.from("rotinas").insert({ user_id: user.id, nome: "Pull — barra fixa", exercicios, ordem: rotinas.length }).select().single();
+    if (r.error) { toast("Não salvou: " + r.error.message); return; }
+    rotinas.push(r.data); renderHub(); toast("Rotina criada. Ajuste as metas ao seu nível.");
+  }
+
+  // ---------- editor de rotina ----------
+  function abrirRotina(r) {
+    if (!bancoNovo) { toast("Rode o arquivo 3-rotinas.sql no Supabase para salvar rotinas."); return; }
+    rotEdit = r ? JSON.parse(JSON.stringify({ id: r.id, nome: r.nome, exercicios: r.exercicios || [] })) : { id: null, nome: "", exercicios: [] };
+    $("rNome").value = rotEdit.nome;
+    $("rApagar").hidden = !rotEdit.id; $("rApagar").textContent = "Apagar"; $("rApagar").dataset.c = "";
+    chips("rChips", (n) => { rotEdit.exercicios.push({ nome: n, unid: unidPadrao(n), descanso: unidPadrao(n) === "seg" ? 60 : 90, nota: "", sets: [{ tipo: "N", alvo: null, kg: null }, { tipo: "N", alvo: null, kg: null }, { tipo: "N", alvo: null, kg: null }] }); renderRotEx(); });
+    renderRotEx(); treinoModo("rotina"); window.scrollTo(0, 0);
+  }
+  $("rNome").addEventListener("input", () => { if (rotEdit) rotEdit.nome = $("rNome").value; });
+  $("rNovoGo").addEventListener("click", () => { const n = $("rNovo").value.trim(); if (!n) return; rotEdit.exercicios.push({ nome: n, unid: "reps", descanso: 90, nota: "", sets: [{ tipo: "N", alvo: null, kg: null }] }); $("rNovo").value = ""; renderRotEx(); });
+  $("rCancelar").addEventListener("click", () => { rotEdit = null; treinoModo("hub"); });
+
+  function renderRotEx() {
+    const box = $("rExs"); box.textContent = "";
+    if (!rotEdit.exercicios.length) { box.innerHTML = '<p class="empty">Adicione os exercícios da rotina abaixo.</p>'; return; }
+    rotEdit.exercicios.forEach((ex, ei) => {
+      const c = document.createElement("div"); c.className = "card ex";
+      c.innerHTML = '<div class="ex-h"><b>' + esc(ex.nome) + '</b><div class="ex-tools">' +
+        '<button type="button" data-mv="-1" aria-label="Subir">↑</button><button type="button" data-mv="1" aria-label="Descer">↓</button>' +
+        '<span class="unit"><button type="button" data-u="reps" aria-pressed="' + (ex.unid === "reps") + '">reps</button><button type="button" data-u="seg" aria-pressed="' + (ex.unid === "seg") + '">seg</button></span>' +
+        '<button type="button" class="danger" data-rm="1" aria-label="Remover exercício">✕</button></div></div>';
+      const nota = document.createElement("input"); nota.type = "text"; nota.placeholder = "Nota (aparece durante o treino)"; nota.value = ex.nota || ""; nota.maxLength = 140;
+      nota.oninput = () => (ex.nota = nota.value); c.appendChild(nota);
+      c.appendChild(descSelect(ex.descanso ?? 90, (v) => (ex.descanso = v)));
+      const h = document.createElement("div"); h.className = "rx set-h"; h.innerHTML = '<span class="lbl">Série</span><span class="lbl">Meta ' + (ex.unid === "seg" ? "seg" : "reps") + '</span><span class="lbl">Carga kg</span><span></span>'; c.appendChild(h);
+      ex.sets.forEach((st, si) => {
+        const row = document.createElement("div"); row.className = "rx";
+        const n = ex.sets.slice(0, si + 1).filter((x) => x.tipo !== "A").length;
+        row.innerHTML = '<button type="button" class="tag ' + st.tipo + '" aria-label="Tipo da série">' + (st.tipo === "N" ? n : st.tipo) + "</button>" +
+          '<input type="number" inputmode="numeric" min="0" placeholder="—" value="' + (st.alvo ?? "") + '">' +
+          '<input type="text" inputmode="decimal" placeholder="corpo" value="' + (st.kg != null ? fmtKg(st.kg).replace(",0", "") : "") + '">' +
+          '<button type="button" class="rm" aria-label="Apagar série">×</button>';
+        const [ia, ik] = row.querySelectorAll("input");
+        ia.oninput = () => (st.alvo = num(ia.value)); ik.oninput = () => (st.kg = num(ik.value));
+        row.querySelector(".tag").onclick = () => { st.tipo = st.tipo === "N" ? "A" : st.tipo === "A" ? "F" : "N"; renderRotEx(); };
+        row.querySelector(".rm").onclick = () => { ex.sets.splice(si, 1); renderRotEx(); };
+        c.appendChild(row);
+      });
+      const add = document.createElement("button"); add.type = "button"; add.className = "ghost"; add.textContent = "+ série";
+      add.onclick = () => { const l = ex.sets[ex.sets.length - 1] || { tipo: "N", alvo: null, kg: null }; ex.sets.push({ tipo: l.tipo === "A" ? "N" : l.tipo, alvo: l.alvo, kg: l.kg }); renderRotEx(); };
+      c.appendChild(add);
+      c.querySelectorAll("[data-u]").forEach((b) => (b.onclick = () => { ex.unid = b.dataset.u; renderRotEx(); }));
+      c.querySelectorAll("[data-mv]").forEach((b) => (b.onclick = () => { const j = ei + Number(b.dataset.mv); if (j < 0 || j >= rotEdit.exercicios.length) return; const a = rotEdit.exercicios; [a[ei], a[j]] = [a[j], a[ei]]; renderRotEx(); }));
+      c.querySelector("[data-rm]").onclick = () => { rotEdit.exercicios.splice(ei, 1); renderRotEx(); };
+      box.appendChild(c);
+    });
+    $("rSalvar").textContent = rotEdit.id ? "Salvar alterações" : "Salvar rotina";
+  }
+  $("rSalvar").addEventListener("click", async () => {
+    rotEdit.nome = $("rNome").value.trim();
+    if (!rotEdit.nome) { toast("Dê um nome para a rotina."); $("rNome").focus(); return; }
+    if (!rotEdit.exercicios.length) { toast("Adicione pelo menos um exercício."); return; }
+    $("rSalvar").disabled = true;
+    const body = { nome: rotEdit.nome, exercicios: rotEdit.exercicios };
+    const r = rotEdit.id ? await sb.from("rotinas").update(body).eq("id", rotEdit.id) : await sb.from("rotinas").insert({ ...body, user_id: user.id, ordem: rotinas.length });
+    $("rSalvar").disabled = false;
+    if (r.error) { toast("Não salvou: " + r.error.message); return; }
+    toast("Rotina salva."); rotEdit = null; await loadAll(); treinoModo("hub");
+  });
+  $("rApagar").addEventListener("click", async () => {
+    const b = $("rApagar");
+    if (b.dataset.c !== "1") { b.dataset.c = "1"; b.textContent = "Confirmar?"; setTimeout(() => { b.dataset.c = ""; b.textContent = "Apagar"; }, 3000); return; }
+    const r = await sb.from("rotinas").delete().eq("id", rotEdit.id);
+    if (r.error) { toast("Não apagou: " + r.error.message); return; }
+    toast("Rotina apagada."); rotEdit = null; await loadAll(); treinoModo("hub");
+  });
+
+  // ---------- treino ao vivo ----------
+  function anterior(nome) {
+    const ts = treinos.filter((t) => t.series.some((s) => s.exercicio === nome)).sort((a, b) => b.data.localeCompare(a.data));
+    if (!ts.length) return [];
+    return ts[0].series.filter((s) => s.exercicio === nome).sort((a, b) => a.serie - b.serie)
+      .map((s) => ({ v: s.segundos != null && s.reps == null ? s.segundos : s.reps, kg: s.carga_kg != null ? Number(s.carga_kg) : null, tipo: s.tipo_serie || "N" }));
+  }
+  function novoEx(nome, base) {
+    const unid = (base && base.unid) || unidPadrao(nome);
+    const sets = base && base.sets && base.sets.length ? base.sets.map((s) => ({ tipo: s.tipo || "N", alvo: s.alvo ?? null, kgAlvo: s.kg ?? null, v: null, kg: null, feito: false }))
+      : [{ tipo: "N", alvo: null, kgAlvo: null, v: null, kg: null, feito: false }];
+    return { nome, unid, descanso: base && base.descanso != null ? base.descanso : unid === "seg" ? 60 : 90, nota: (base && base.nota) || "", sets };
+  }
+  function iniciarSessao(rot) {
+    if (sessao) { treinoModo("sessao"); toast("Já tem um treino em andamento."); return; }
+    sessao = { rotinaId: rot ? rot.id : null, nome: rot ? rot.nome : "Treino livre", inicio: Date.now(), data: hoje(), nota: "", exs: rot ? (rot.exercicios || []).map((e) => novoEx(e.nome, e)) : [] };
+    store.set(sessao); treinoModo("sessao"); window.scrollTo(0, 0); tick();
+  }
+  function salvarSessao() { store.set(sessao); }
+
+  function renderSessao() {
+    if (!sessao) return;
+    $("sNome").textContent = sessao.nome;
+    $("sNota").value = sessao.nota || "";
+    chips("sChips", (n) => { sessao.exs.push(novoEx(n)); salvarSessao(); renderSessao(); });
+    const box = $("sExs"); box.textContent = "";
+    if (!sessao.exs.length) box.innerHTML = '<p class="empty">Adicione o primeiro exercício abaixo.</p>';
+    sessao.exs.forEach((ex, ei) => {
+      const prev = anterior(ex.nome);
+      const c = document.createElement("div"); c.className = "card ex";
+      const rec = melhorReps(ex.nome);
+      c.innerHTML = '<div class="ex-h"><div><b>' + esc(ex.nome) + "</b>" + (rec && ex.unid === "reps" ? '<div class="small muted">recorde: ' + rec.v + " reps</div>" : "") + '</div><div class="ex-tools">' +
+        '<button type="button" data-mv="-1" aria-label="Subir">↑</button><button type="button" data-mv="1" aria-label="Descer">↓</button>' +
+        '<button type="button" class="danger" data-rm="1" aria-label="Remover exercício">✕</button></div></div>' +
+        (ex.nota ? '<p class="small muted">' + esc(ex.nota) + "</p>" : "");
+      c.appendChild(descSelect(ex.descanso, (v) => { ex.descanso = v; salvarSessao(); }));
+      const h = document.createElement("div"); h.className = "sx h";
+      h.innerHTML = "<span>Série</span><span>Anterior</span><span>kg</span><span>" + (ex.unid === "seg" ? "seg" : "reps") + "</span><span>✓</span>";
+      c.appendChild(h);
+      let n = 0;
+      ex.sets.forEach((st, si) => {
+        if (st.tipo !== "A") n++;
+        const p = prev[si];
+        const prevTxt = p ? (p.v ?? "–") + (ex.unid === "seg" ? "s" : "") + (p.kg ? " × " + fmtKg(p.kg).replace(",0", "") + "kg" : "") : "—";
+        const phV = p && p.v != null ? p.v : st.alvo != null ? st.alvo : "";
+        const phK = p && p.kg ? fmtKg(p.kg).replace(",0", "") : st.kgAlvo != null ? fmtKg(st.kgAlvo).replace(",0", "") : "";
+        const row = document.createElement("div"); row.className = "sx" + (st.feito ? " done" : "");
+        row.innerHTML = '<button type="button" class="tag ' + st.tipo + '" aria-label="Tipo da série (toque para mudar)">' + (st.tipo === "N" ? n : st.tipo) + "</button>" +
+          '<span class="prev num">' + prevTxt + "</span>" +
+          '<input type="text" inputmode="decimal" placeholder="' + (phK || "—") + '" value="' + (st.kg != null ? fmtKg(st.kg).replace(",0", "") : "") + '" aria-label="Carga em kg">' +
+          '<input type="number" inputmode="numeric" min="0" placeholder="' + phV + '" value="' + (st.v ?? "") + '" aria-label="' + (ex.unid === "seg" ? "Segundos" : "Repetições") + '">' +
+          '<button type="button" class="ck" aria-label="Marcar série como feita">✓</button>';
+        const [ik, iv] = row.querySelectorAll("input");
+        ik.oninput = () => { st.kg = num(ik.value); salvarSessao(); };
+        iv.oninput = () => { st.v = num(iv.value); salvarSessao(); };
+        row.querySelector(".tag").onclick = () => { st.tipo = st.tipo === "N" ? "A" : st.tipo === "A" ? "F" : "N"; salvarSessao(); renderSessao(); };
+        row.querySelector(".ck").onclick = () => {
+          if (!st.feito) {
+            if (st.v == null) { const pv = num(iv.placeholder); if (pv == null) { toast("Anote quantas " + (ex.unid === "seg" ? "segundos" : "repetições") + " fez."); iv.focus(); return; } st.v = pv; }
+            if (st.kg == null && ik.placeholder && ik.placeholder !== "—") st.kg = num(ik.placeholder);
+            st.feito = true; salvarSessao();
+            const r0 = melhorReps(ex.nome);
+            if (ex.unid === "reps" && st.tipo !== "A" && r0 && st.v > r0.v) toast("Novo recorde em " + ex.nome + ": " + st.v + "! 🔥");
+            if (ex.descanso > 0) iniciarDescanso(ex.descanso);
+          } else { st.feito = false; salvarSessao(); }
+          renderSessao(); resumoSessao();
+        };
+        c.appendChild(row);
+      });
+      const add = document.createElement("button"); add.type = "button"; add.className = "ghost"; add.textContent = "+ série";
+      add.onclick = () => { const l = ex.sets[ex.sets.length - 1]; ex.sets.push({ tipo: l && l.tipo !== "A" ? l.tipo : "N", alvo: l ? l.alvo : null, kgAlvo: l ? l.kgAlvo : null, v: null, kg: l ? l.kg : null, feito: false }); salvarSessao(); renderSessao(); };
+      c.appendChild(add);
+      c.querySelectorAll("[data-mv]").forEach((b) => (b.onclick = () => { const j = ei + Number(b.dataset.mv); if (j < 0 || j >= sessao.exs.length) return; const a = sessao.exs; [a[ei], a[j]] = [a[j], a[ei]]; salvarSessao(); renderSessao(); }));
+      c.querySelector("[data-rm]").onclick = () => { sessao.exs.splice(ei, 1); salvarSessao(); renderSessao(); };
+      box.appendChild(c);
+    });
+    resumoSessao();
+  }
+  function resumoSessao() {
+    if (!sessao) return;
+    let feitas = 0, vol = 0;
+    sessao.exs.forEach((ex) => ex.sets.forEach((s) => { if (s.feito) { feitas++; if (s.kg && ex.unid === "reps") vol += s.kg * (s.v || 0); } }));
+    $("sResumo").textContent = feitas + (feitas === 1 ? " série feita" : " séries feitas");
+    $("sVolume").textContent = vol ? fmtKg(vol).replace(",0", "") + " kg de carga extra" : "";
+  }
+  $("sNota").addEventListener("input", () => { if (sessao) { sessao.nota = $("sNota").value; salvarSessao(); } });
+  $("sNovoGo").addEventListener("click", () => { const n = $("sNovo").value.trim(); if (!n) return; sessao.exs.push(novoEx(n)); $("sNovo").value = ""; salvarSessao(); renderSessao(); });
+
+  $("sDescartar").addEventListener("click", () => {
+    const b = $("sDescartar");
+    if (b.dataset.c !== "1") { b.dataset.c = "1"; b.textContent = "Toque de novo para descartar"; setTimeout(() => { b.dataset.c = ""; b.textContent = "Descartar treino"; }, 3000); return; }
+    sessao = null; store.set(null); pararDescanso(); treinoModo("hub"); toast("Treino descartado.");
+  });
+  $("sFinalizar").addEventListener("click", async () => {
+    const feitos = [];
+    sessao.exs.forEach((ex, oi) => { let k = 0; ex.sets.forEach((s) => { if (!s.feito) return; k++; feitos.push({ ex, oi, s, k }); }); });
+    if (!feitos.length) { toast("Marque pelo menos uma série com ✓ antes de finalizar."); return; }
+    const b = $("sFinalizar"); b.disabled = true;
+    try {
+      const dur = Math.round((Date.now() - sessao.inicio) / 1000);
+      const notaBase = [sessao.nome !== "Treino livre" ? sessao.nome : "", sessao.nota].filter(Boolean).join(" — ");
+      const existente = treinos.find((t) => t.data === sessao.data && t.tipo === "mu");
+      let tid, ordemBase = 0;
+      if (existente) {
+        tid = existente.id; ordemBase = existente.series.reduce((m, s) => Math.max(m, s.ordem + 1), 0);
+        const up = { nota: [existente.nota, notaBase].filter(Boolean).join(" · ") || null };
+        if (bancoNovo) up.duracao_seg = (existente.duracao_seg || 0) + dur;
+        const r = await sb.from("treinos").update(up).eq("id", tid); if (r.error) throw r.error;
+      } else {
+        const row = { user_id: user.id, data: sessao.data, tipo: "mu", nota: notaBase || null };
+        if (bancoNovo) row.duracao_seg = dur;
+        const r = await sb.from("treinos").insert(row).select("id").single(); if (r.error) throw r.error; tid = r.data.id;
+      }
+      const linhas = feitos.map(({ ex, oi, s, k }) => {
+        const l = { user_id: user.id, treino_id: tid, exercicio: ex.nome, ordem: ordemBase + oi, serie: k,
+          reps: ex.unid === "reps" ? (s.v != null ? Math.round(s.v) : null) : null,
+          segundos: ex.unid === "seg" ? (s.v != null ? Math.round(s.v) : null) : null, carga_kg: s.kg };
+        if (bancoNovo) l.tipo_serie = s.tipo;
+        return l;
+      });
+      const ins = await sb.from("series").insert(linhas); if (ins.error) throw ins.error;
+      const antes = { b: melhorReps("Barra pronada"), f: melhorReps("Flexão") };
+      sessao = null; store.set(null); pararDescanso();
+      await loadAll();
+      const dep = { b: melhorReps("Barra pronada"), f: melhorReps("Flexão") };
+      let msg = "Treino salvo: " + feitos.length + " séries em " + fmtT(dur) + ".";
+      if (dep.b && (!antes.b || dep.b.v > antes.b.v)) msg = "Recorde de barras: " + dep.b.v + "! 🔥 Treino salvo.";
+      else if (dep.f && (!antes.f || dep.f.v > antes.f.v)) msg = "Recorde de flexões: " + dep.f.v + "! 🔥 Treino salvo.";
+      toast(msg); go("tabHome");
+    } catch (err) { toast("Não salvou: " + ((err && err.message) || "tente de novo") + ". Seu treino continua aqui."); }
+    b.disabled = false;
+  });
+
+  // ---------- cronômetro de descanso ----------
+  let audio = null;
+  function bip() {
+    try {
+      audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+      [0, 0.25, 0.5].forEach((t) => { const o = audio.createOscillator(), g = audio.createGain(); o.frequency.value = 880; o.connect(g); g.connect(audio.destination);
+        g.gain.setValueAtTime(0.0001, audio.currentTime + t); g.gain.exponentialRampToValueAtTime(0.4, audio.currentTime + t + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + t + 0.18);
+        o.start(audio.currentTime + t); o.stop(audio.currentTime + t + 0.2); });
+    } catch (e) {}
+    try { if (navigator.vibrate) navigator.vibrate([200, 100, 200]); } catch (e) {}
+  }
+  function iniciarDescanso(seg) {
+    try { audio = audio || new (window.AudioContext || window.webkitAudioContext)(); if (audio.state === "suspended") audio.resume(); } catch (e) {} // destrava o som no iPhone (precisa de um toque)
+    descanso = { fim: Date.now() + seg * 1000, total: seg, avisou: false };
+    try { localStorage.setItem("ft_desc", JSON.stringify(descanso)); } catch (e) {}
+    $("restBar").hidden = false; $("restBar").classList.remove("fim"); document.body.classList.add("resting"); tick();
+  }
+  function pararDescanso() { descanso = null; try { localStorage.removeItem("ft_desc"); } catch (e) {} $("restBar").hidden = true; document.body.classList.remove("resting"); }
+  $("restMenos").addEventListener("click", () => { if (descanso) { descanso.fim -= 15000; descanso.total = Math.max(1, descanso.total - 15); tick(); } });
+  $("restMais").addEventListener("click", () => { if (descanso) { descanso.fim = Math.max(descanso.fim, Date.now()) + 15000; descanso.total += 15; descanso.avisou = false; $("restBar").classList.remove("fim"); tick(); } });
+  $("restPular").addEventListener("click", pararDescanso);
+
+  function atualizarBanner() {
+    const mostrar = !!sessao && !(tab === "tabTreino" && modo === "sessao");
+    $("sessBanner").hidden = !mostrar;
+  }
+  $("sessBanner").addEventListener("click", () => { draft = null; go("tabTreino"); treinoModo("sessao"); });
+
+  function tick() {
+    if (sessao) {
+      const t = fmtT((Date.now() - sessao.inicio) / 1000);
+      $("sTempo").textContent = t; $("sessBannerT").textContent = t;
+    }
+    if (descanso) {
+      const rest = (descanso.fim - Date.now()) / 1000;
+      if (rest <= 0) {
+        $("restTxt").textContent = "Bora!"; $("restFill").style.width = "100%"; $("restBar").classList.add("fim");
+        if (!descanso.avisou) { descanso.avisou = true; bip(); toast("Descanso acabou: hora da próxima série."); setTimeout(() => { if (descanso && descanso.avisou) pararDescanso(); }, 4000); }
+      } else {
+        $("restTxt").textContent = fmtT(rest);
+        $("restFill").style.width = Math.max(0, Math.min(100, (rest / descanso.total) * 100)) + "%";
+      }
+    }
+    atualizarBanner();
+  }
+  setInterval(tick, 500);
+
+  // retoma um treino que ficou aberto (app fechado no meio do treino)
+  (function retomar() {
+    const s = store.get();
+    if (s && s.exs && Date.now() - s.inicio < 12 * 3600 * 1000) { sessao = s; }
+    else if (s) store.set(null);
+    try { const d = JSON.parse(localStorage.getItem("ft_desc") || "null"); if (sessao && d && d.fim > Date.now()) { descanso = d; $("restBar").hidden = false; document.body.classList.add("resting"); } } catch (e) {}
+  })();
 
   document.addEventListener("visibilitychange", () => { if (!document.hidden && user) loadAll(); });
 })();

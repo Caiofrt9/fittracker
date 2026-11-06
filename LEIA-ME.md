@@ -58,7 +58,8 @@ Como o app é só seu, depois de criar sua conta você pode ir em **Authenticati
 ## Como usar
 
 - **Início** — meta de 80 kg, peso atual, quanto já perdeu, treinos do mês, recordes de barras e flexões, e a semana colorida.
-- **Treinar** — escolha o dia e o tipo. Em musculação/calistenia, adicione exercícios e anote cada série: repetições (ou segundos, no dead hang e na prancha) e carga extra em kg, se usar. Deixe a carga vazia para peso do corpo. "Repetir último treino" copia o treino anterior para você só ajustar os números.
+- **Treinar → Minhas rotinas** — monte rotinas com exercícios, séries (normal, A = aquecimento, F = falha), metas de repetições/carga e o descanso de cada exercício. Em **Iniciar rotina**, a coluna *Anterior* mostra o que você fez da última vez; toque em ✓ ao terminar cada série e o cronômetro de descanso começa sozinho (−15 / +15 / Pular). Se fechar o app no meio, o treino continua de onde parou.
+- **Treinar → Registro rápido** — escolha o dia e o tipo. Em musculação/calistenia, adicione exercícios e anote cada série: repetições (ou segundos, no dead hang e na prancha) e carga extra em kg, se usar. Deixe a carga vazia para peso do corpo. "Repetir último treino" copia o treino anterior para você só ajustar os números.
 - **Calendário** — dourado = muay thai, azul = musculação, vermelho = dia sem treino. Toque num dia para ver, editar ou apagar.
 - **Evolução** — gráfico do peso com a linha da meta, e a evolução de cada exercício (recorde e melhor série de cada treino).
 - **Ajustes** — mudar a meta e sair da conta.
@@ -68,6 +69,10 @@ Os recordes da tela inicial vêm dos exercícios **Barra pronada** e **Flexão**
 ## Atualizar o app depois
 
 Se eu te mandar uma versão nova: substitua os arquivos da pasta `app` (mantendo o seu `config.js`), abra o site no Netlify → **Deploys** e arraste a pasta `app` de novo. No iPhone, feche e abra o app duas vezes para pegar a versão nova.
+
+## Atualização das rotinas
+
+Para as rotinas funcionarem, rode uma vez o arquivo `supabase/3-rotinas.sql` no SQL Editor do Supabase.
 
 ## Custos
 

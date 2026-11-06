@@ -1,5 +1,5 @@
 // Guarda os arquivos do app para abrir rápido; os dados sempre vêm do Supabase.
-const CACHE = "fittracker-v3";
+const CACHE = "fittracker-v4";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "config.js", "manifest.webmanifest", "icons/icon-180.png", "icons/icon-192.png",
   "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"];
 
